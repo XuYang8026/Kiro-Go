@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestParseModelPassesThroughDynamicKiroModel(t *testing.T) {
+	model, thinking := ParseModelAndThinking("deepseek-3.2-thinking", "-thinking")
+	if model != "deepseek-3.2" {
+		t.Fatalf("expected dynamic Kiro model to pass through, got %q", model)
+	}
+	if !thinking {
+		t.Fatalf("expected thinking suffix to be detected")
+	}
+}
+
 func TestExtractOpenAIMessageTextStructured(t *testing.T) {
 	content := []interface{}{
 		map[string]interface{}{"type": "text", "text": "alpha"},

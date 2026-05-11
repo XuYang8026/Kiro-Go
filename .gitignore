@@ -1,0 +1,4 @@
+data/
+*.log
+kiro-go
+kiro-api-proxy

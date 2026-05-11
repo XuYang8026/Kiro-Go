@@ -70,6 +70,10 @@ func ParseModelAndThinking(model string, thinkingSuffix string) (string, bool) {
 		return model, thinking
 	}
 
+	if strings.TrimSpace(model) != "" {
+		return model, thinking
+	}
+
 	return "claude-sonnet-4.5", thinking
 }
 

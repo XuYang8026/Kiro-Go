@@ -156,13 +156,26 @@ func (h *Handler) validateApiKey(r *http.Request) bool {
 	apiKeyHeader := r.Header.Get("X-Api-Key")
 
 	var providedKey string
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		providedKey = strings.TrimPrefix(authHeader, "Bearer ")
+	authParts := strings.Fields(authHeader)
+	if len(authParts) == 2 && strings.EqualFold(authParts[0], "Bearer") {
+		providedKey = authParts[1]
 	} else if apiKeyHeader != "" {
 		providedKey = apiKeyHeader
 	}
 
-	return providedKey == expectedKey
+	return apiKeysMatch(providedKey, expectedKey)
+}
+
+func apiKeysMatch(providedKey, expectedKey string) bool {
+	providedKey = strings.TrimSpace(providedKey)
+	expectedKey = strings.TrimSpace(expectedKey)
+	if providedKey == "" || expectedKey == "" {
+		return false
+	}
+	if providedKey == expectedKey {
+		return true
+	}
+	return strings.TrimPrefix(providedKey, "sk-") == strings.TrimPrefix(expectedKey, "sk-")
 }
 
 // ServeHTTP 路由分发
@@ -269,6 +282,13 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	cached := h.cachedModels
 	h.modelsCacheMu.RUnlock()
 
+	if len(cached) == 0 {
+		h.refreshModelsCache()
+		h.modelsCacheMu.RLock()
+		cached = h.cachedModels
+		h.modelsCacheMu.RUnlock()
+	}
+
 	thinkingSuffix := config.GetThinkingConfig().Suffix
 
 	var models []map[string]interface{}
@@ -297,11 +317,19 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 添加别名模型
-	models = append(models,
-		buildModelInfo("auto", "kiro-proxy", true),
-		buildModelInfo("gpt-4o", "kiro-proxy", true),
-		buildModelInfo("gpt-4", "kiro-proxy", true),
-	)
+	seenModels := make(map[string]bool, len(models))
+	for _, model := range models {
+		if id, ok := model["id"].(string); ok {
+			seenModels[id] = true
+		}
+	}
+	for _, alias := range []string{"auto", "gpt-4o", "gpt-4"} {
+		if seenModels[alias] {
+			continue
+		}
+		models = append(models, buildModelInfo(alias, "kiro-proxy", true))
+		seenModels[alias] = true
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1812,7 +1840,7 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		h.pool.Reload()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
+			"success":   true,
 			"refreshed": successCount,
 			"failed":    failCount,
 		})

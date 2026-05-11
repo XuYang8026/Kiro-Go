@@ -1,6 +1,16 @@
 package proxy
 
-import "testing"
+import (
+	"encoding/json"
+	"io"
+	"kiro-api-proxy/config"
+	"kiro-api-proxy/pool"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestThinkingSourceReasoningFirst(t *testing.T) {
 	var source thinkingStreamSource
@@ -47,4 +57,119 @@ func TestThinkingSourceSameSourceRemainsAllowed(t *testing.T) {
 	if !allowReasoningSource(&source) {
 		t.Fatalf("expected repeated reasoning source selection to stay allowed")
 	}
+}
+
+func TestValidateApiKeyAcceptsBareFormOfSkPrefixedKey(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateSettings("sk-test-key", true, ""); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	if !(&Handler{}).validateApiKey(req) {
+		t.Fatalf("expected bare key to match configured sk-prefixed key")
+	}
+}
+
+func TestHandleModelsRefreshesEmptyCacheWhenAccountAvailable(t *testing.T) {
+	configPath := t.TempDir() + "/config.json"
+	if err := config.Init(configPath); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.AddAccount(config.Account{
+		ID:          "acct-1",
+		AccessToken: "access-token",
+		Enabled:     true,
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+		Region:      "us-east-1",
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	p := pool.GetPool()
+	p.Reload()
+
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.Contains(req.URL.Path, "ListAvailableModels") {
+			t.Fatalf("unexpected request path: %s", req.URL.Path)
+		}
+		body := `{"models":[{"modelId":"unit-test-model","supportedInputTypes":["TEXT"]}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = previousTransport
+	})
+
+	h := &Handler{pool: p}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+
+	h.handleModels(rec, req)
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, model := range payload.Data {
+		if model.ID == "unit-test-model" {
+			return
+		}
+	}
+	t.Fatalf("expected refreshed model list to include unit-test-model, got %s", rec.Body.String())
+}
+
+func TestHandleModelsDoesNotDuplicateAliasAlreadyReturnedByKiro(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+
+	h := &Handler{
+		cachedModels: []ModelInfo{
+			{ModelId: "auto", InputTypes: []string{"TEXT"}},
+			{ModelId: "claude-sonnet-4.6", InputTypes: []string{"TEXT"}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+
+	h.handleModels(rec, req)
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	count := 0
+	for _, model := range payload.Data {
+		if model.ID == "auto" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected auto to appear once, got %d in %s", count, rec.Body.String())
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
