@@ -1012,6 +1012,24 @@
                     data-i18n="settings.saveEndpoint"></button>
             </div>
             <div class="card">
+                <div class="card-header"><span class="card-title" data-i18n="settings.identitySettings"></span></div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:10px">
+                        <label class="switch"><input type="checkbox" id="identityOverrideEnabled"><span
+                                class="slider"></span></label>
+                        <span data-i18n="settings.enableIdentityOverride"></span>
+                    </label>
+                    <small style="color:#64748b;font-size:12px;margin-top:4px;display:block"
+                        data-i18n="settings.identityHint"></small>
+                </div>
+                <div class="form-group">
+                    <label data-i18n="settings.identityResponse"></label>
+                    <textarea id="identityOverrideResponse"></textarea>
+                </div>
+                <button class="btn btn-primary" onclick="saveIdentityOverrideConfig()"
+                    data-i18n="settings.saveIdentity"></button>
+            </div>
+            <div class="card">
                 <div class="card-header"><span class="card-title" data-i18n="settings.adminPassword"></span></div>
                 <div class="form-group"><label data-i18n="settings.newPassword"></label><input type="password"
                         id="newPassword" data-i18n-placeholder="settings.newPasswordPlaceholder"></div>
@@ -1137,6 +1155,12 @@
                 'settings.endpointHint': '选择首选端点，自动选择模式下会根据可用性自动选择端点',
                 'settings.saveEndpoint': '保存端点设置',
                 'settings.endpointSaved': '端点设置已保存',
+                'settings.identitySettings': '身份回答设置',
+                'settings.enableIdentityOverride': '启用身份回答覆盖',
+                'settings.identityHint': '命中身份、模型、Kiro、中转等问题时直接返回固定回答，不调用上游模型',
+                'settings.identityResponse': '固定回答',
+                'settings.saveIdentity': '保存身份设置',
+                'settings.identitySaved': '身份设置已保存',
                 'settings.adminPassword': '管理密码',
                 'settings.newPassword': '新密码',
                 'settings.newPasswordPlaceholder': '输入新密码',
@@ -1343,6 +1367,12 @@
                 'settings.endpointHint': 'Select preferred endpoint. In auto-select mode, the endpoint is automatically selected based on availability.',
                 'settings.saveEndpoint': 'Save Endpoint Settings',
                 'settings.endpointSaved': 'Endpoint settings saved',
+                'settings.identitySettings': 'Identity Response Settings',
+                'settings.enableIdentityOverride': 'Enable Identity Response Override',
+                'settings.identityHint': 'Directly returns this response for identity, model, Kiro, proxy, relay, or provider questions without calling the upstream model.',
+                'settings.identityResponse': 'Fixed Response',
+                'settings.saveIdentity': 'Save Identity Settings',
+                'settings.identitySaved': 'Identity settings saved',
                 'settings.adminPassword': 'Admin Password',
                 'settings.newPassword': 'New Password',
                 'settings.newPasswordPlaceholder': 'Enter new password',
@@ -1991,6 +2021,7 @@
             document.getElementById('apiKeyInput').value = d.apiKey || '';
             loadThinkingConfig();
             loadEndpointConfig();
+            loadIdentityOverrideConfig();
         }
         async function loadThinkingConfig() {
             const res = await fetch('/admin/api/thinking', { headers: { 'X-Admin-Password': password } });
@@ -2019,6 +2050,20 @@
             });
             const d = await res.json();
             if (d.success) { alert(t('settings.endpointSaved')); } else { alert(t('common.saveFailed') + ': ' + d.error); }
+        }
+        async function loadIdentityOverrideConfig() {
+            const res = await fetch('/admin/api/identity', { headers: { 'X-Admin-Password': password } });
+            const d = await res.json();
+            document.getElementById('identityOverrideEnabled').checked = !!d.enabled;
+            document.getElementById('identityOverrideResponse').value = d.response || '不是 Kiro。我是 Claude 模型。\\nNot Kiro. I am a Claude model.';
+        }
+        async function saveIdentityOverrideConfig() {
+            const res = await fetch('/admin/api/identity', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
+                body: JSON.stringify({ enabled: document.getElementById('identityOverrideEnabled').checked, response: document.getElementById('identityOverrideResponse').value })
+            });
+            const d = await res.json();
+            if (d.success) { alert(t('settings.identitySaved')); } else { alert(t('common.saveFailed') + ': ' + d.error); }
         }
         function generateApiKey() {
             const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';

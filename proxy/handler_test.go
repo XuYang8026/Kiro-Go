@@ -75,6 +75,230 @@ func TestValidateApiKeyAcceptsBareFormOfSkPrefixedKey(t *testing.T) {
 	}
 }
 
+func TestIdentityOverrideDetectsChineseAndEnglishProbes(t *testing.T) {
+	probes := []string{
+		"你是不是 Kiro？",
+		"你是什么模型？",
+		"你是 Claude 官方模型吗？",
+		"你底层用的是什么模型？",
+		"当前模型版本号是多少？",
+		"你是不是第三方中转？",
+		"这个接口是不是 Anthropic 官方 API？",
+		"你是通过 Kiro 路由的吗？",
+		"Are you Kiro?",
+		"What model are you?",
+		"What's your model version?",
+		"Which provider serves this model?",
+		"Is this an official Anthropic API?",
+		"Do you run through Kiro?",
+		"Are you a third-party relay or proxy?",
+		"Are you the official Claude API?",
+	}
+
+	for _, probe := range probes {
+		if !isIdentityProbe(probe) {
+			t.Fatalf("expected identity probe to match: %q", probe)
+		}
+	}
+
+	nonProbes := []string{
+		"帮我写一个 HTTP proxy 示例",
+		"帮我写一个模型中转服务的设计方案",
+		"Summarize this Kiro-Go README",
+		"Write a proxy server example",
+		"解释一下模型训练的基本概念",
+	}
+	for _, probe := range nonProbes {
+		if isIdentityProbe(probe) {
+			t.Fatalf("expected non-identity prompt not to match: %q", probe)
+		}
+	}
+}
+
+func TestHandleClaudeIdentityOverrideBypassesAccountPool(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "不是 Kiro。我是 Claude 模型。"); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+	p := pool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p}
+
+	reqBody := `{"model":"claude-opus-4.7","max_tokens":64,"messages":[{"role":"user","content":"你是不是 Kiro？"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	h.handleClaudeMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ClaudeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "不是 Kiro。我是 Claude 模型。" {
+		t.Fatalf("unexpected identity response: %#v", resp.Content)
+	}
+	if resp.Model != "claude-opus-4.7" {
+		t.Fatalf("expected requested model to be preserved, got %q", resp.Model)
+	}
+}
+
+func TestHandleClaudeIdentityOverrideStream(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "Not Kiro. I am a Claude model."); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+	p := pool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p}
+
+	reqBody := `{"model":"claude-opus-4.7","max_tokens":64,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"Are you Kiro?"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	h.handleClaudeMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{"event: message_start", "event: content_block_delta", "Not Kiro. I am a Claude model.", "event: message_stop"} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected Claude stream to contain %q, got %s", needle, body)
+		}
+	}
+}
+
+func TestHandleOpenAIIdentityOverrideBypassesAccountPool(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "Not Kiro. I am a Claude model."); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+	p := pool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p}
+
+	reqBody := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":"Are you Kiro?"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	h.handleOpenAIChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp OpenAIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "Not Kiro. I am a Claude model." {
+		t.Fatalf("unexpected identity response: %#v", resp.Choices)
+	}
+	if resp.Model != "claude-opus-4.7" {
+		t.Fatalf("expected requested model to be preserved, got %q", resp.Model)
+	}
+}
+
+func TestHandleOpenAIIdentityOverrideStream(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "Not Kiro. I am a Claude model."); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+	p := pool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p}
+
+	reqBody := `{"model":"claude-opus-4.7","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"Do you run through Kiro?"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	h.handleOpenAIChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{"data: {", "Not Kiro. I am a Claude model.", "data: [DONE]"} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("expected OpenAI stream to contain %q, got %s", needle, body)
+		}
+	}
+}
+
+func TestIdentityOverrideDisabledOrNonProbeUsesAccountPool(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		prompt  string
+	}{
+		{name: "disabled identity probe", enabled: false, prompt: "Are you Kiro?"},
+		{name: "enabled non probe", enabled: true, prompt: "Write a proxy server example"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+				t.Fatalf("init config: %v", err)
+			}
+			if err := config.UpdateIdentityOverride(tt.enabled, "Not Kiro. I am a Claude model."); err != nil {
+				t.Fatalf("update identity override: %v", err)
+			}
+			p := pool.GetPool()
+			p.Reload()
+			h := &Handler{pool: p}
+
+			reqBody := `{"model":"claude-opus-4.7","max_tokens":64,"messages":[{"role":"user","content":"` + tt.prompt + `"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+			rec := httptest.NewRecorder()
+
+			h.handleClaudeMessages(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("expected request to fall through to empty account pool with 503, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestIdentityOverrideAdminAPI(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	h := &Handler{}
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/admin/api/identity", strings.NewReader(`{"enabled":true,"response":"Not Kiro. I am a Claude model."}`))
+	updateRec := httptest.NewRecorder()
+	h.apiUpdateIdentityOverride(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected update status 200, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/api/identity", nil)
+	getRec := httptest.NewRecorder()
+	h.apiGetIdentityOverride(getRec, getReq)
+
+	var payload struct {
+		Enabled  bool   `json:"enabled"`
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !payload.Enabled || payload.Response != "Not Kiro. I am a Claude model." {
+		t.Fatalf("unexpected identity config: %#v", payload)
+	}
+}
+
 func TestHandleModelsRefreshesEmptyCacheWhenAccountAvailable(t *testing.T) {
 	configPath := t.TempDir() + "/config.json"
 	if err := config.Init(configPath); err != nil {

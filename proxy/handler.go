@@ -251,6 +251,183 @@ func apiKeysMatch(providedKey, expectedKey string) bool {
 	return strings.TrimPrefix(providedKey, "sk-") == strings.TrimPrefix(expectedKey, "sk-")
 }
 
+func identityOverrideResponseForClaude(req *ClaudeRequest) (string, bool) {
+	override := config.GetIdentityOverride()
+	if !override.Enabled {
+		return "", false
+	}
+	if !isIdentityProbe(latestClaudeUserText(req)) {
+		return "", false
+	}
+	return override.Response, true
+}
+
+func identityOverrideResponseForOpenAI(req *OpenAIRequest) (string, bool) {
+	override := config.GetIdentityOverride()
+	if !override.Enabled {
+		return "", false
+	}
+	if !isIdentityProbe(latestOpenAIUserText(req)) {
+		return "", false
+	}
+	return override.Response, true
+}
+
+func latestClaudeUserText(req *ClaudeRequest) string {
+	if req == nil {
+		return ""
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.TrimSpace(req.Messages[i].Role) != "user" {
+			continue
+		}
+		text, _, _ := extractClaudeUserContent(req.Messages[i].Content)
+		return text
+	}
+	return ""
+}
+
+func latestOpenAIUserText(req *OpenAIRequest) string {
+	if req == nil {
+		return ""
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.TrimSpace(req.Messages[i].Role) != "user" {
+			continue
+		}
+		text, _ := extractOpenAIUserContent(req.Messages[i].Content)
+		return text
+	}
+	return ""
+}
+
+func isIdentityProbe(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	compact := compactIdentityProbeText(normalized)
+
+	if isChineseIdentityProbe(compact) {
+		return true
+	}
+	if isEnglishIdentityProbe(normalized) {
+		return true
+	}
+	return false
+}
+
+func isChineseIdentityProbe(compact string) bool {
+	if containsAny(compact, []string{
+		"你是谁", "你是誰", "您是谁", "您是誰",
+		"你叫什么", "你叫什麼", "你叫啥", "你是什么", "你是什麼", "你是啥",
+		"什么模型", "什麼模型", "哪个模型", "哪個模型", "哪种模型", "哪種模型",
+		"模型版本", "版本号", "版本號", "底层模型", "底層模型", "基础模型", "基礎模型",
+		"真实模型", "真實模型", "原始模型", "上游模型",
+	}) {
+		return true
+	}
+
+	selfSubject := containsAny(compact, []string{"你", "您"})
+	currentSubject := containsAny(compact, []string{
+		"当前", "當前", "这个", "這個", "此", "本接口", "该接口", "該接口",
+		"本服务", "本服務", "本模型", "这里", "這里", "这里的", "這里的",
+	})
+	questionMarker := containsAny(compact, []string{
+		"是不是", "是否", "吗", "嗎", "么", "什麼", "什么", "哪个", "哪個",
+		"哪家", "多少", "谁", "誰",
+	})
+	providerTerms := containsAny(compact, []string{
+		"kiro", "claude", "anthropic", "官方", "api", "接口", "第三方",
+		"中转", "中轉", "代理", "转发", "轉發", "路由", "网关", "網關",
+		"套壳", "套殼", "上游", "提供", "来自", "來自", "供应商", "供應商",
+		"服务商", "服務商",
+	})
+	modelTerms := containsAny(compact, []string{
+		"模型", "版本", "底层", "底層", "基础", "基礎", "真实", "真實", "原始", "上游",
+	})
+	provenanceTerms := containsAny(compact, []string{
+		"官方", "中转", "中轉", "代理", "转发", "轉發", "路由", "网关", "網關",
+		"套壳", "套殼", "上游", "提供", "来自", "來自", "通过", "透过", "經由", "经由",
+	})
+
+	if (selfSubject || currentSubject) && (providerTerms || modelTerms) && (questionMarker || provenanceTerms) {
+		return true
+	}
+	if questionMarker && containsAny(compact, []string{"kiro", "claude", "anthropic"}) && (providerTerms || modelTerms) {
+		return true
+	}
+	return false
+}
+
+func isEnglishIdentityProbe(normalized string) bool {
+	if containsAny(normalized, []string{
+		"who are you",
+		"what are you",
+		"what model are you",
+		"which model are you",
+		"what is your model",
+		"what's your model",
+		"which model version",
+		"what model version",
+		"your model version",
+		"what is your name",
+		"what's your name",
+		"identify yourself",
+		"what provider are you",
+		"who is your provider",
+		"which provider serves",
+		"is this an official",
+		"is this the official",
+		"is this official",
+		"is this a proxy",
+		"is this a relay",
+		"is this a gateway",
+		"is this third-party",
+		"is this third party",
+		"do you run through",
+		"are you running through",
+		"are you served by",
+		"are you provided by",
+		"are you routed through",
+	}) {
+		return true
+	}
+
+	questionLead := containsAny(normalized, []string{
+		"are you", "is this", "is it", "do you", "does this", "what ", "which ", "who ", "identify",
+	})
+	if !questionLead {
+		return false
+	}
+	subject := containsAny(normalized, []string{"you", "your", "this", "model", "api", "endpoint", "service", "provider"})
+	identityTerms := containsAny(normalized, []string{
+		"kiro", "claude", "anthropic", "official", "model", "version", "provider",
+		"third-party", "third party", "proxy", "relay", "gateway", "wrapper", "intermediary",
+		"routed", "route", "served", "provided", "run through", "running through",
+	})
+	return subject && identityTerms
+}
+
+func compactIdentityProbeText(text string) string {
+	replacer := strings.NewReplacer(
+		" ", "", "\t", "", "\n", "", "\r", "",
+		"?", "", "？", "", "!", "", "！", "",
+		".", "", "。", "", ",", "", "，", "",
+		":", "", "：", "", ";", "", "；", "",
+	)
+	return replacer.Replace(text)
+}
+
+func containsAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ServeHTTP 路由分发
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
@@ -628,6 +805,14 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	thinkingCfg := config.GetThinkingConfig()
+	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	req.Model = actualModel
+	if response, ok := identityOverrideResponseForClaude(&req); ok {
+		h.sendClaudeIdentityOverride(w, &req, response)
+		return
+	}
+
 	// 获取账号
 	account := h.pool.GetNext()
 	if account == nil {
@@ -642,9 +827,6 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	}
 
 	// 解析模型和 thinking 模式
-	thinkingCfg := config.GetThinkingConfig()
-	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
-	req.Model = actualModel
 	estimatedInputTokens := estimateClaudeRequestInputTokens(&req)
 	cacheProfile := h.promptCache.BuildClaudeProfile(&req, estimatedInputTokens)
 	cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
@@ -658,6 +840,77 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	} else {
 		h.handleClaudeNonStream(w, account, kiroPayload, req.Model, thinking, estimatedInputTokens, cacheUsage, cacheProfile)
 	}
+}
+
+func (h *Handler) sendClaudeIdentityOverride(w http.ResponseWriter, req *ClaudeRequest, response string) {
+	inputTokens := estimateClaudeRequestInputTokens(req)
+	outputTokens := estimateApproxTokens(response)
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	if outputTokens < 1 {
+		outputTokens = 1
+	}
+	h.recordSuccess(inputTokens, outputTokens, 0)
+
+	if req.Stream {
+		h.sendClaudeIdentityOverrideStream(w, req.Model, response, inputTokens, outputTokens)
+		return
+	}
+
+	resp := KiroToClaudeResponse(response, "", nil, inputTokens, outputTokens, req.Model)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) sendClaudeIdentityOverrideStream(w http.ResponseWriter, model, response string, inputTokens, outputTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.sendClaudeError(w, 500, "api_error", "Streaming not supported")
+		return
+	}
+
+	msgID := "msg_" + uuid.New().String()
+	h.sendSSE(w, flusher, "message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []interface{}{},
+			"model":         model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]int{"input_tokens": inputTokens, "output_tokens": 0},
+		},
+	})
+	h.sendSSE(w, flusher, "content_block_start", map[string]interface{}{
+		"type":  "content_block_start",
+		"index": 0,
+		"content_block": map[string]string{
+			"type": "text",
+			"text": "",
+		},
+	})
+	h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]string{
+			"type": "text_delta",
+			"text": response,
+		},
+	})
+	h.sendSSE(w, flusher, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0})
+	h.sendSSE(w, flusher, "message_delta", map[string]interface{}{
+		"type":  "message_delta",
+		"delta": map[string]string{"stop_reason": "end_turn"},
+		"usage": map[string]int{"input_tokens": inputTokens, "output_tokens": outputTokens},
+	})
+	h.sendSSE(w, flusher, "message_stop", map[string]interface{}{"type": "message_stop"})
 }
 
 // handleClaudeStream Claude 流式响应
@@ -1237,6 +1490,14 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	thinkingCfg := config.GetThinkingConfig()
+	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	req.Model = actualModel
+	if response, ok := identityOverrideResponseForOpenAI(&req); ok {
+		h.sendOpenAIIdentityOverride(w, &req, response)
+		return
+	}
+
 	account := h.pool.GetNext()
 	if account == nil {
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
@@ -1249,9 +1510,6 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 解析模型和 thinking 模式
-	thinkingCfg := config.GetThinkingConfig()
-	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
-	req.Model = actualModel
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	kiroPayload := OpenAIToKiro(&req, thinking)
@@ -1261,6 +1519,74 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.handleOpenAINonStream(w, account, kiroPayload, req.Model, thinking, estimatedInputTokens)
 	}
+}
+
+func (h *Handler) sendOpenAIIdentityOverride(w http.ResponseWriter, req *OpenAIRequest, response string) {
+	inputTokens := estimateOpenAIRequestInputTokens(req)
+	outputTokens := estimateApproxTokens(response)
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	if outputTokens < 1 {
+		outputTokens = 1
+	}
+	h.recordSuccess(inputTokens, outputTokens, 0)
+
+	if req.Stream {
+		h.sendOpenAIIdentityOverrideStream(w, req.Model, response, inputTokens, outputTokens)
+		return
+	}
+
+	resp := KiroToOpenAIResponse(response, nil, inputTokens, outputTokens, req.Model)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) sendOpenAIIdentityOverrideStream(w http.ResponseWriter, model, response string, inputTokens, outputTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.sendOpenAIError(w, 500, "server_error", "Streaming not supported")
+		return
+	}
+
+	chatID := "chatcmpl-" + uuid.New().String()
+	chunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]interface{}{{
+			"index":         0,
+			"delta":         map[string]string{"role": "assistant", "content": response},
+			"finish_reason": nil,
+		}},
+	}
+	data, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	finalChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]interface{}{{
+			"index":         0,
+			"delta":         map[string]interface{}{},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	data, _ = json.Marshal(finalChunk)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 // handleOpenAIStream OpenAI 流式响应
@@ -1802,6 +2128,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetEndpointConfig(w, r)
 	case path == "/endpoint" && r.Method == "POST":
 		h.apiUpdateEndpointConfig(w, r)
+	case path == "/identity" && r.Method == "GET":
+		h.apiGetIdentityOverride(w, r)
+	case path == "/identity" && r.Method == "POST":
+		h.apiUpdateIdentityOverride(w, r)
 	case path == "/version" && r.Method == "GET":
 		h.apiGetVersion(w, r)
 	case path == "/export" && r.Method == "POST":
@@ -2445,6 +2775,31 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func (h *Handler) apiGetIdentityOverride(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(config.GetIdentityOverride())
+}
+
+func (h *Handler) apiUpdateIdentityOverride(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled  bool   `json:"enabled"`
+		Response string `json:"response"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if req.Response == "" {
+		req.Response = config.DefaultIdentityOverrideResponse
+	}
+	if err := config.UpdateIdentityOverride(req.Enabled, req.Response); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 

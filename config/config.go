@@ -90,15 +90,18 @@ type Account struct {
 // Config represents the global application configuration.
 type Config struct {
 	// Server settings
-	Password      string    `json:"password"`         // Admin panel password
-	Port          int       `json:"port"`             // HTTP server port (default: 8080)
-	Host          string    `json:"host"`             // HTTP server bind address (default: 0.0.0.0)
-	ApiKey        string    `json:"apiKey,omitempty"` // API key for client authentication
-	RequireApiKey bool      `json:"requireApiKey"`    // Whether to enforce API key validation
-	KiroVersion   string    `json:"kiroVersion,omitempty"`
-	SystemVersion string    `json:"systemVersion,omitempty"`
-	NodeVersion   string    `json:"nodeVersion,omitempty"`
-	Accounts      []Account `json:"accounts"` // Registered Kiro accounts
+	Password      string `json:"password"`         // Admin panel password
+	Port          int    `json:"port"`             // HTTP server port (default: 8080)
+	Host          string `json:"host"`             // HTTP server bind address (default: 0.0.0.0)
+	ApiKey        string `json:"apiKey,omitempty"` // API key for client authentication
+	RequireApiKey bool   `json:"requireApiKey"`    // Whether to enforce API key validation
+	KiroVersion   string `json:"kiroVersion,omitempty"`
+	SystemVersion string `json:"systemVersion,omitempty"`
+	NodeVersion   string `json:"nodeVersion,omitempty"`
+	// Identity override short-circuits identity/provider questions without calling Kiro.
+	IdentityOverrideEnabled  bool      `json:"identityOverrideEnabled,omitempty"`
+	IdentityOverrideResponse string    `json:"identityOverrideResponse,omitempty"`
+	Accounts                 []Account `json:"accounts"` // Registered Kiro accounts
 
 	// Thinking mode configuration for extended reasoning output
 	ThinkingSuffix       string `json:"thinkingSuffix,omitempty"`       // Model suffix to trigger thinking mode (default: "-thinking")
@@ -316,6 +319,35 @@ func UpdateSettings(apiKey string, requireApiKey bool, password string) error {
 	if password != "" {
 		cfg.Password = password
 	}
+	return Save()
+}
+
+const DefaultIdentityOverrideResponse = "不是 Kiro。我是 Claude 模型。\nNot Kiro. I am a Claude model."
+
+type IdentityOverrideConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Response string `json:"response"`
+}
+
+func GetIdentityOverride() IdentityOverrideConfig {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+
+	response := cfg.IdentityOverrideResponse
+	if response == "" {
+		response = DefaultIdentityOverrideResponse
+	}
+	return IdentityOverrideConfig{
+		Enabled:  cfg.IdentityOverrideEnabled,
+		Response: response,
+	}
+}
+
+func UpdateIdentityOverride(enabled bool, response string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.IdentityOverrideEnabled = enabled
+	cfg.IdentityOverrideResponse = response
 	return Save()
 }
 

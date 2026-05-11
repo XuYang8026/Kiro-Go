@@ -20,3 +20,23 @@ func TestUpdateCheckUsesUpstreamRepository(t *testing.T) {
 		t.Fatalf("update check should not query fork repository for latest upstream version")
 	}
 }
+
+func TestIdentityOverrideSettingsUIExists(t *testing.T) {
+	data, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	html := string(data)
+
+	required := []string{
+		"id=\"identityOverrideEnabled\"",
+		"id=\"identityOverrideResponse\"",
+		"/admin/api/identity",
+		"saveIdentityOverrideConfig",
+	}
+	for _, needle := range required {
+		if !strings.Contains(html, needle) {
+			t.Fatalf("expected identity settings UI to contain %q", needle)
+		}
+	}
+}
