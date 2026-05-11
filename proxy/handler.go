@@ -454,14 +454,23 @@ func isEnglishIdentityProbe(normalized string) bool {
 		"what are you",
 		"what model are you",
 		"which model are you",
+		"what exact model are you",
 		"what is your model",
 		"what's your model",
 		"which model version",
 		"what model version",
+		"what exact version",
 		"your model version",
 		"what is your name",
 		"what's your name",
 		"identify yourself",
+		"what company made you",
+		"what company developed you",
+		"who made you",
+		"who developed you",
+		"who created you",
+		"which company made you",
+		"which company developed you",
 		"what provider are you",
 		"who is your provider",
 		"which provider serves",
@@ -490,7 +499,7 @@ func isEnglishIdentityProbe(normalized string) bool {
 	}
 	subject := containsAny(normalized, []string{"you", "your", "this", "model", "api", "endpoint", "service", "provider"})
 	identityTerms := containsAny(normalized, []string{
-		"kiro", "claude", "anthropic", "official", "model", "version", "provider",
+		"kiro", "claude", "anthropic", "official", "model", "version", "provider", "company", "made", "developed", "created",
 		"third-party", "third party", "proxy", "relay", "gateway", "wrapper", "intermediary",
 		"routed", "route", "served", "provided", "run through", "running through",
 	})
@@ -500,6 +509,9 @@ func isEnglishIdentityProbe(normalized string) bool {
 func selectIdentityOverrideResponse(response, prompt string) string {
 	genericResponse := selectGenericIdentityOverrideResponse(response, prompt)
 	if !isDirectKiroIdentityQuestion(prompt) {
+		if isManagedIdentityOverrideResponse(strings.TrimSpace(response)) {
+			return selectSpecificIdentityOverrideResponse(prompt, genericResponse)
+		}
 		return genericResponse
 	}
 	if looksEnglishPrompt(prompt) {
@@ -517,6 +529,77 @@ func selectGenericIdentityOverrideResponse(response, prompt string) string {
 		return config.DefaultIdentityOverrideResponse
 	}
 	return response
+}
+
+func selectSpecificIdentityOverrideResponse(prompt, fallback string) string {
+	english := looksEnglishPrompt(prompt)
+	compact := compactIdentityProbeText(strings.ToLower(prompt))
+	normalized := normalizeEnglishIdentityQuestion(strings.ToLower(strings.TrimSpace(prompt)))
+
+	if isCompanyIdentityQuestion(compact, normalized) {
+		if english {
+			return "I am a Claude model developed by Anthropic."
+		}
+		return "我是 Anthropic 开发的 Claude 模型。"
+	}
+	if isVersionIdentityQuestion(compact, normalized) {
+		if english {
+			return "I cannot confirm the exact version number."
+		}
+		return "我无法确认具体版本号。"
+	}
+	if isSpecificModelIdentityQuestion(compact, normalized) {
+		if english {
+			return "I am a Claude-family model."
+		}
+		return "我是 Claude 系列模型。"
+	}
+	return fallback
+}
+
+func isCompanyIdentityQuestion(compact, normalized string) bool {
+	return containsAny(compact, []string{
+		"哪个公司", "哪家公司", "哪家公司的", "哪个公司开发", "哪个公司開發",
+		"谁开发", "誰開發", "谁创建", "誰創建", "谁做的", "誰做的",
+		"开发商", "開發商", "哪个公司做", "哪家公司做", "来自哪个公司", "來自哪家公司",
+	}) || containsAny(normalized, []string{
+		"what company made you",
+		"what company developed you",
+		"who made you",
+		"who developed you",
+		"who created you",
+		"which company made you",
+		"which company developed you",
+	})
+}
+
+func isVersionIdentityQuestion(compact, normalized string) bool {
+	return containsAny(compact, []string{
+		"具体版本", "具體版本", "版本号", "版本號", "版本是多少", "版本是什么", "版本是什麼",
+		"型号版本", "模型版本", "哪一版", "哪个版本", "哪個版本",
+	}) || containsAny(normalized, []string{
+		"what exact version",
+		"which exact version",
+		"what version are you",
+		"which version are you",
+		"model version",
+		"version number",
+	})
+}
+
+func isSpecificModelIdentityQuestion(compact, normalized string) bool {
+	return containsAny(compact, []string{
+		"具体是什么模型", "具體是什麼模型", "具体什么模型", "具體什麼模型",
+		"具体模型", "具體模型", "哪一个模型", "哪一個模型", "哪个模型", "哪個模型",
+		"底层模型", "底層模型", "基础模型", "基礎模型", "真实模型", "真實模型",
+	}) || containsAny(normalized, []string{
+		"what exact model",
+		"which exact model",
+		"what specific model",
+		"which specific model",
+		"underlying model",
+		"base model",
+	})
 }
 
 func isManagedIdentityOverrideResponse(response string) bool {

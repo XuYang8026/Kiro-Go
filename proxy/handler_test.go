@@ -330,6 +330,41 @@ func TestIdentityOverrideMentionsKiroOnlyForDirectKiroIdentityQuestion(t *testin
 	}
 }
 
+func TestIdentityOverrideUsesSpecificAnswersForCompanyModelAndVersion(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "我是 Claude 模型。"); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		prompt   string
+		expected string
+	}{
+		{name: "Chinese company", prompt: "你来自哪个公司？", expected: "我是 Anthropic 开发的 Claude 模型。"},
+		{name: "Chinese exact model", prompt: "你具体是什么模型", expected: "我是 Claude 系列模型。"},
+		{name: "Chinese version", prompt: "具体版本号是多少", expected: "我无法确认具体版本号。"},
+		{name: "English company", prompt: "What company made you?", expected: "I am a Claude model developed by Anthropic."},
+		{name: "English exact model", prompt: "What exact model are you?", expected: "I am a Claude-family model."},
+		{name: "English version", prompt: "What exact version are you?", expected: "I cannot confirm the exact version number."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &ClaudeRequest{Messages: []ClaudeMessage{{Role: "user", Content: tt.prompt}}}
+			response, ok := identityOverrideResponseForClaude(req)
+			if !ok {
+				t.Fatalf("expected identity prompt to match")
+			}
+			if response != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, response)
+			}
+		})
+	}
+}
+
 func TestIdentityOverrideDisabledOrNonProbeUsesAccountPool(t *testing.T) {
 	tests := []struct {
 		name    string
