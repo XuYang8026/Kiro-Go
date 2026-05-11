@@ -168,10 +168,40 @@ func TestHandleClaudeIdentityOverrideStream(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{"event: message_start", "event: content_block_delta", "Not Kiro. I am a Claude model.", "event: message_stop"} {
+	for _, needle := range []string{"event: message_start", "event: content_block_delta", "Not ", "Kiro. ", "Claude ", "model.", "event: message_stop"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected Claude stream to contain %q, got %s", needle, body)
 		}
+	}
+}
+
+func TestClaudeIdentityOverrideStreamDelaysAndChunksResponse(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "不是 Kiro。我是 Claude 模型。"); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+	p := pool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p}
+
+	reqBody := `{"model":"auto","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"你是不是 Kiro？"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	h.handleClaudeMessages(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if elapsed < 1400*time.Millisecond {
+		t.Fatalf("expected identity stream to wait before first response, elapsed %s", elapsed)
+	}
+	if got := strings.Count(rec.Body.String(), "event: content_block_delta"); got < 2 {
+		t.Fatalf("expected identity stream to emit multiple content deltas, got %d: %s", got, rec.Body.String())
 	}
 }
 
@@ -228,10 +258,38 @@ func TestHandleOpenAIIdentityOverrideStream(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{"data: {", "Not Kiro. I am a Claude model.", "data: [DONE]"} {
+	for _, needle := range []string{"data: {", "\"role\":\"assistant\"", "Not ", "Kiro. ", "Claude ", "model.", "data: [DONE]"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected OpenAI stream to contain %q, got %s", needle, body)
 		}
+	}
+}
+
+func TestIdentityOverrideLegacyDefaultUsesSinglePromptLanguage(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	legacyBilingual := "不是 Kiro。我是 Claude 模型。\nNot Kiro. I am a Claude model."
+	if err := config.UpdateIdentityOverride(true, legacyBilingual); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+
+	chineseReq := &ClaudeRequest{Messages: []ClaudeMessage{{Role: "user", Content: "你是不是 Kiro？"}}}
+	chineseResponse, ok := identityOverrideResponseForClaude(chineseReq)
+	if !ok {
+		t.Fatalf("expected Chinese identity prompt to match")
+	}
+	if chineseResponse != "不是 Kiro。我是 Claude 模型。" {
+		t.Fatalf("expected Chinese-only response, got %q", chineseResponse)
+	}
+
+	englishReq := &ClaudeRequest{Messages: []ClaudeMessage{{Role: "user", Content: "Are you Kiro?"}}}
+	englishResponse, ok := identityOverrideResponseForClaude(englishReq)
+	if !ok {
+		t.Fatalf("expected English identity prompt to match")
+	}
+	if englishResponse != "Not Kiro. I am a Claude model." {
+		t.Fatalf("expected English-only response, got %q", englishResponse)
 	}
 }
 

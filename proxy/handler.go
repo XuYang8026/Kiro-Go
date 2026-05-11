@@ -44,6 +44,15 @@ const (
 	thinkingSourceTagBlock
 )
 
+const (
+	identityOverrideInitialDelay = 1500 * time.Millisecond
+	identityOverrideChunkDelay   = 120 * time.Millisecond
+
+	defaultEnglishIdentityOverrideResponse  = "Not Kiro. I am a Claude model."
+	legacyBilingualIdentityOverrideResponse = "不是 Kiro。我是 Claude 模型。\n" +
+		defaultEnglishIdentityOverrideResponse
+)
+
 func allowReasoningSource(source *thinkingStreamSource) bool {
 	if *source == thinkingSourceTagBlock {
 		return false
@@ -256,10 +265,11 @@ func identityOverrideResponseForClaude(req *ClaudeRequest) (string, bool) {
 	if !override.Enabled {
 		return "", false
 	}
-	if !isIdentityProbe(latestClaudeUserText(req)) {
+	userText := latestClaudeUserText(req)
+	if !isIdentityProbe(userText) {
 		return "", false
 	}
-	return override.Response, true
+	return selectIdentityOverrideResponse(override.Response, userText), true
 }
 
 func identityOverrideResponseForOpenAI(req *OpenAIRequest) (string, bool) {
@@ -267,10 +277,11 @@ func identityOverrideResponseForOpenAI(req *OpenAIRequest) (string, bool) {
 	if !override.Enabled {
 		return "", false
 	}
-	if !isIdentityProbe(latestOpenAIUserText(req)) {
+	userText := latestOpenAIUserText(req)
+	if !isIdentityProbe(userText) {
 		return "", false
 	}
-	return override.Response, true
+	return selectIdentityOverrideResponse(override.Response, userText), true
 }
 
 func latestClaudeUserText(req *ClaudeRequest) string {
@@ -407,6 +418,61 @@ func isEnglishIdentityProbe(normalized string) bool {
 		"routed", "route", "served", "provided", "run through", "running through",
 	})
 	return subject && identityTerms
+}
+
+func selectIdentityOverrideResponse(response, prompt string) string {
+	response = strings.TrimSpace(response)
+	if response == "" ||
+		response == config.DefaultIdentityOverrideResponse ||
+		response == legacyBilingualIdentityOverrideResponse {
+		if looksEnglishPrompt(prompt) {
+			return defaultEnglishIdentityOverrideResponse
+		}
+		return config.DefaultIdentityOverrideResponse
+	}
+	return response
+}
+
+func looksEnglishPrompt(text string) bool {
+	hasASCIIAlpha := false
+	for _, r := range text {
+		if r >= '\u4e00' && r <= '\u9fff' {
+			return false
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasASCIIAlpha = true
+		}
+	}
+	return hasASCIIAlpha
+}
+
+func splitIdentityOverrideStreamText(text string) []string {
+	fields := strings.Fields(text)
+	if len(fields) > 1 {
+		chunks := make([]string, 0, len(fields))
+		for i, field := range fields {
+			if i < len(fields)-1 {
+				field += " "
+			}
+			chunks = append(chunks, field)
+		}
+		return chunks
+	}
+
+	runes := []rune(text)
+	if len(runes) <= 6 {
+		return []string{text}
+	}
+	chunks := make([]string, 0, len(runes)/4+1)
+	for start := 0; start < len(runes); {
+		end := start + 4
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunks = append(chunks, string(runes[start:end]))
+		start = end
+	}
+	return chunks
 }
 
 func compactIdentityProbeText(text string) string {
@@ -858,6 +924,7 @@ func (h *Handler) sendClaudeIdentityOverride(w http.ResponseWriter, req *ClaudeR
 		return
 	}
 
+	time.Sleep(identityOverrideInitialDelay)
 	resp := KiroToClaudeResponse(response, "", nil, inputTokens, outputTokens, req.Model)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(resp)
@@ -873,6 +940,8 @@ func (h *Handler) sendClaudeIdentityOverrideStream(w http.ResponseWriter, model,
 		h.sendClaudeError(w, 500, "api_error", "Streaming not supported")
 		return
 	}
+
+	time.Sleep(identityOverrideInitialDelay)
 
 	msgID := "msg_" + uuid.New().String()
 	h.sendSSE(w, flusher, "message_start", map[string]interface{}{
@@ -896,14 +965,19 @@ func (h *Handler) sendClaudeIdentityOverrideStream(w http.ResponseWriter, model,
 			"text": "",
 		},
 	})
-	h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-		"type":  "content_block_delta",
-		"index": 0,
-		"delta": map[string]string{
-			"type": "text_delta",
-			"text": response,
-		},
-	})
+	for i, chunk := range splitIdentityOverrideStreamText(response) {
+		if i > 0 {
+			time.Sleep(identityOverrideChunkDelay)
+		}
+		h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]string{
+				"type": "text_delta",
+				"text": chunk,
+			},
+		})
+	}
 	h.sendSSE(w, flusher, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0})
 	h.sendSSE(w, flusher, "message_delta", map[string]interface{}{
 		"type":  "message_delta",
@@ -1537,6 +1611,7 @@ func (h *Handler) sendOpenAIIdentityOverride(w http.ResponseWriter, req *OpenAIR
 		return
 	}
 
+	time.Sleep(identityOverrideInitialDelay)
 	resp := KiroToOpenAIResponse(response, nil, inputTokens, outputTokens, req.Model)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(resp)
@@ -1553,20 +1628,44 @@ func (h *Handler) sendOpenAIIdentityOverrideStream(w http.ResponseWriter, model,
 		return
 	}
 
+	time.Sleep(identityOverrideInitialDelay)
+
 	chatID := "chatcmpl-" + uuid.New().String()
-	chunk := map[string]interface{}{
+	roleChunk := map[string]interface{}{
 		"id":      chatID,
 		"object":  "chat.completion.chunk",
 		"created": time.Now().Unix(),
 		"model":   model,
 		"choices": []map[string]interface{}{{
 			"index":         0,
-			"delta":         map[string]string{"role": "assistant", "content": response},
+			"delta":         map[string]string{"role": "assistant"},
 			"finish_reason": nil,
 		}},
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := json.Marshal(roleChunk)
 	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	flusher.Flush()
+
+	for i, chunkText := range splitIdentityOverrideStreamText(response) {
+		if i > 0 {
+			time.Sleep(identityOverrideChunkDelay)
+		}
+		chunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]interface{}{{
+				"index":         0,
+				"delta":         map[string]string{"content": chunkText},
+				"finish_reason": nil,
+			}},
+		}
+		data, _ = json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	}
+
 	finalChunk := map[string]interface{}{
 		"id":      chatID,
 		"object":  "chat.completion.chunk",
