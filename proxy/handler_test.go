@@ -258,7 +258,7 @@ func TestHandleOpenAIIdentityOverrideStream(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{"data: {", "\"role\":\"assistant\"", "Not ", "Kiro. ", "Claude ", "model.", "data: [DONE]"} {
+	for _, needle := range []string{"data: {", "\"role\":\"assistant\"", "I ", "am ", "Claude ", "model.", "data: [DONE]"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("expected OpenAI stream to contain %q, got %s", needle, body)
 		}
@@ -290,6 +290,43 @@ func TestIdentityOverrideLegacyDefaultUsesSinglePromptLanguage(t *testing.T) {
 	}
 	if englishResponse != "Not Kiro. I am a Claude model." {
 		t.Fatalf("expected English-only response, got %q", englishResponse)
+	}
+}
+
+func TestIdentityOverrideMentionsKiroOnlyForDirectKiroIdentityQuestion(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := config.UpdateIdentityOverride(true, "不是 Kiro。我是 Claude 模型。"); err != nil {
+		t.Fatalf("update identity override: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		prompt   string
+		expected string
+	}{
+		{name: "Chinese who are you", prompt: "你是谁", expected: "我是 Claude 模型。"},
+		{name: "Chinese model question", prompt: "你是什么模型？", expected: "我是 Claude 模型。"},
+		{name: "Chinese proxy question", prompt: "你是不是第三方中转？", expected: "我是 Claude 模型。"},
+		{name: "Chinese Kiro identity question", prompt: "你是不是 Kiro？", expected: "不是 Kiro。我是 Claude 模型。"},
+		{name: "English who are you", prompt: "Who are you?", expected: "I am a Claude model."},
+		{name: "English routing question", prompt: "Do you run through Kiro?", expected: "I am a Claude model."},
+		{name: "English Kiro proxy question", prompt: "Are you Kiro's proxy?", expected: "I am a Claude model."},
+		{name: "English Kiro identity question", prompt: "Are you Kiro?", expected: "Not Kiro. I am a Claude model."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &ClaudeRequest{Messages: []ClaudeMessage{{Role: "user", Content: tt.prompt}}}
+			response, ok := identityOverrideResponseForClaude(req)
+			if !ok {
+				t.Fatalf("expected identity prompt to match")
+			}
+			if response != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, response)
+			}
+		})
 	}
 }
 

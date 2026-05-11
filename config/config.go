@@ -322,7 +322,7 @@ func UpdateSettings(apiKey string, requireApiKey bool, password string) error {
 	return Save()
 }
 
-const DefaultIdentityOverrideResponse = "不是 Kiro。我是 Claude 模型。"
+const DefaultIdentityOverrideResponse = "我是 Claude 模型。"
 
 type IdentityOverrideConfig struct {
 	Enabled  bool   `json:"enabled"`

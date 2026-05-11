@@ -2055,7 +2055,7 @@
             const res = await fetch('/admin/api/identity', { headers: { 'X-Admin-Password': password } });
             const d = await res.json();
             document.getElementById('identityOverrideEnabled').checked = !!d.enabled;
-            document.getElementById('identityOverrideResponse').value = d.response || '不是 Kiro。我是 Claude 模型。';
+            document.getElementById('identityOverrideResponse').value = d.response || '我是 Claude 模型。';
         }
         async function saveIdentityOverrideConfig() {
             const res = await fetch('/admin/api/identity', {

@@ -48,9 +48,11 @@ const (
 	identityOverrideInitialDelay = 1500 * time.Millisecond
 	identityOverrideChunkDelay   = 120 * time.Millisecond
 
-	defaultEnglishIdentityOverrideResponse  = "Not Kiro. I am a Claude model."
+	defaultEnglishIdentityOverrideResponse  = "I am a Claude model."
+	defaultChineseKiroIdentityResponse      = "不是 Kiro。我是 Claude 模型。"
+	defaultEnglishKiroIdentityResponse      = "Not Kiro. I am a Claude model."
 	legacyBilingualIdentityOverrideResponse = "不是 Kiro。我是 Claude 模型。\n" +
-		defaultEnglishIdentityOverrideResponse
+		defaultEnglishKiroIdentityResponse
 )
 
 func allowReasoningSource(source *thinkingStreamSource) bool {
@@ -421,16 +423,106 @@ func isEnglishIdentityProbe(normalized string) bool {
 }
 
 func selectIdentityOverrideResponse(response, prompt string) string {
+	genericResponse := selectGenericIdentityOverrideResponse(response, prompt)
+	if !isDirectKiroIdentityQuestion(prompt) {
+		return genericResponse
+	}
+	if looksEnglishPrompt(prompt) {
+		return "Not Kiro. " + genericResponse
+	}
+	return "不是 Kiro。" + genericResponse
+}
+
+func selectGenericIdentityOverrideResponse(response, prompt string) string {
 	response = strings.TrimSpace(response)
-	if response == "" ||
-		response == config.DefaultIdentityOverrideResponse ||
-		response == legacyBilingualIdentityOverrideResponse {
+	if isManagedIdentityOverrideResponse(response) {
 		if looksEnglishPrompt(prompt) {
 			return defaultEnglishIdentityOverrideResponse
 		}
 		return config.DefaultIdentityOverrideResponse
 	}
 	return response
+}
+
+func isManagedIdentityOverrideResponse(response string) bool {
+	switch response {
+	case "",
+		config.DefaultIdentityOverrideResponse,
+		defaultEnglishIdentityOverrideResponse,
+		defaultChineseKiroIdentityResponse,
+		defaultEnglishKiroIdentityResponse,
+		legacyBilingualIdentityOverrideResponse:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDirectKiroIdentityQuestion(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" || !strings.Contains(normalized, "kiro") {
+		return false
+	}
+	compact := compactIdentityProbeText(normalized)
+	if containsAny(compact, []string{
+		"通过kiro", "透过kiro", "經由kiro", "经由kiro",
+		"kiro路由", "kiro代理", "kiro中转", "kiro中轉", "kiro网关", "kiro網關",
+	}) {
+		return false
+	}
+	if hasDirectKiroChinesePredicate(compact, []string{
+		"你是不是", "您是不是", "你是否是", "您是否是", "你是", "您是",
+		"是不是", "是否是", "是",
+	}) {
+		return true
+	}
+
+	english := normalizeEnglishIdentityQuestion(normalized)
+	return hasDirectKiroEnglishPredicate(english, []string{
+		"are you kiro",
+		"are you a kiro",
+		"are u kiro",
+		"is this kiro",
+		"is it kiro",
+		"are you named kiro",
+		"is your name kiro",
+	})
+}
+
+func hasDirectKiroEnglishPredicate(text string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if text == phrase || strings.HasSuffix(text, " "+phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectKiroChinesePredicate(compact string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		needle := prefix + "kiro"
+		idx := strings.Index(compact, needle)
+		if idx < 0 {
+			continue
+		}
+		rest := compact[idx+len(needle):]
+		if isChineseQuestionParticleSuffix(rest) {
+			return true
+		}
+	}
+	return false
+}
+
+func isChineseQuestionParticleSuffix(rest string) bool {
+	return rest == "" || rest == "吗" || rest == "嗎" || rest == "么" || rest == "嘛" || rest == "吧"
+}
+
+func normalizeEnglishIdentityQuestion(text string) string {
+	replacer := strings.NewReplacer(
+		"?", " ", "!", " ", ".", " ", ",", " ", ":", " ", ";", " ",
+		"'", "", "\"", "", "\t", " ", "\n", " ", "\r", " ",
+	)
+	return strings.Join(strings.Fields(replacer.Replace(text)), " ")
 }
 
 func looksEnglishPrompt(text string) bool {
