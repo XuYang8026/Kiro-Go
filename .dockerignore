@@ -1,5 +1,13 @@
 .git
+.github
+Kiro-Go
 data/
+data
+backup*
+PR-*.md
+docker-compose.yml
+README.md
+README_CN.md
 *.log
 kiro-go
 kiro-api-proxy
