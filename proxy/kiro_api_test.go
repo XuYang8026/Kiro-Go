@@ -11,7 +11,7 @@ import (
 
 func TestResolveProfileArnReturnsCachedValueWithoutRequest(t *testing.T) {
 	kiroRestHttpStore.Store(&http.Client{
-		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		Transport: kiroAPIRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Fatal("unexpected HTTP request for cached profile ARN")
 			return nil, nil
 		}),
@@ -45,7 +45,7 @@ func TestResolveProfileArnFetchesAndCachesProfile(t *testing.T) {
 	}
 
 	kiroRestHttpStore.Store(&http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		Transport: kiroAPIRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Method != http.MethodPost {
 				t.Fatalf("expected POST, got %s", req.Method)
 			}
@@ -89,8 +89,8 @@ func TestResolveProfileArnFetchesAndCachesProfile(t *testing.T) {
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
+type kiroAPIRoundTripFunc func(*http.Request) (*http.Response, error)
 
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+func (fn kiroAPIRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }

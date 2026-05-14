@@ -447,22 +447,21 @@ func TestHandleModelsRefreshesEmptyCacheWhenAccountAvailable(t *testing.T) {
 	p := pool.GetPool()
 	p.Reload()
 
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if !strings.Contains(req.URL.Path, "ListAvailableModels") {
-			t.Fatalf("unexpected request path: %s", req.URL.Path)
-		}
-		body := `{"models":[{"modelId":"unit-test-model","supportedInputTypes":["TEXT"]}]}`
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    req,
-		}, nil
+	kiroRestHttpStore.Store(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if !strings.Contains(req.URL.Path, "ListAvailableModels") {
+				t.Fatalf("unexpected request path: %s", req.URL.Path)
+			}
+			body := `{"models":[{"modelId":"unit-test-model","supportedInputTypes":["TEXT"]}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    req,
+			}, nil
+		}),
 	})
-	t.Cleanup(func() {
-		http.DefaultTransport = previousTransport
-	})
+	t.Cleanup(func() { InitKiroHttpClient("") })
 
 	h := &Handler{pool: p}
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
