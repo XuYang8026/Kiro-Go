@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"kiro-go/auth"
 	"kiro-go/config"
+	"kiro-go/logger"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 )
@@ -17,6 +20,7 @@ const (
 // GetUsageLimits 获取账户使用量和订阅信息
 func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 	url := fmt.Sprintf("%s/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true", kiroRestAPIBase)
+	url = withProfileArnQuery(url, account)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -25,8 +29,7 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 
 	setKiroHeaders(req, account)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := kiroRestHttpStore.Load().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -57,8 +60,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := kiroRestHttpStore.Load().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -79,6 +81,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 // ListAvailableModels 获取可用模型列表
 func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	url := fmt.Sprintf("%s/ListAvailableModels?origin=AI_EDITOR&maxResults=50", kiroRestAPIBase)
+	url = withProfileArnQuery(url, account)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -87,8 +90,7 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 
 	setKiroHeaders(req, account)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := kiroRestHttpStore.Load().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +108,88 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 		return nil, err
 	}
 	return result.Models, nil
+}
+
+// ResolveProfileArn returns the account profile ARN, fetching and caching it
+// when it is missing. First tries ListAvailableProfiles; if that returns empty,
+// falls back to refreshing the token (which returns profileArn in the response).
+func ResolveProfileArn(account *config.Account) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("account is nil")
+	}
+	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
+		return profileArn, nil
+	}
+
+	// Try ListAvailableProfiles first
+	profileArn, err := listAvailableProfiles(account)
+	if err == nil && profileArn != "" {
+		if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
+			logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
+		}
+		account.ProfileArn = profileArn
+		return profileArn, nil
+	}
+
+	// Fallback: refresh token to get profileArn from auth response
+	if account.RefreshToken != "" {
+		_, _, _, refreshedArn, refreshErr := auth.RefreshToken(account)
+		if refreshErr == nil && refreshedArn != "" {
+			if updateErr := config.UpdateAccountProfileArn(account.ID, refreshedArn); updateErr != nil {
+				logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
+			}
+			account.ProfileArn = refreshedArn
+			return refreshedArn, nil
+		}
+	}
+
+	return "", fmt.Errorf("no available Kiro profile")
+}
+
+func listAvailableProfiles(account *config.Account) (string, error) {
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/ListAvailableProfiles", kiroRestAPIBase), strings.NewReader(`{"maxResults":10}`))
+	if err != nil {
+		return "", err
+	}
+	setKiroHeaders(req, account)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := kiroRestHttpStore.Load().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Profiles []struct {
+			Arn string `json:"arn"`
+		} `json:"profiles"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	for _, profile := range result.Profiles {
+		if profileArn := strings.TrimSpace(profile.Arn); profileArn != "" {
+			return profileArn, nil
+		}
+	}
+	return "", fmt.Errorf("empty profile list")
+}
+
+func withProfileArnQuery(rawURL string, account *config.Account) string {
+	if account == nil {
+		return rawURL
+	}
+	profileArn := strings.TrimSpace(account.ProfileArn)
+	if profileArn == "" {
+		return rawURL
+	}
+	return rawURL + "&profileArn=" + neturl.QueryEscape(profileArn)
 }
 
 func setKiroHeaders(req *http.Request, account *config.Account) {
@@ -132,7 +216,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "TEMPORARILY_SUSPENDED") {
 			// 账户被暂时封禁，自动禁用并标记封禁状态
-			fmt.Printf("[RefreshAccountInfo] Account %s is temporarily suspended: %v\n", account.Email, err)
+			logger.Warnf("[RefreshAccountInfo] Account %s is temporarily suspended: %v", account.Email, err)
 
 			// 更新账户封禁状态并自动禁用
 			updatedAccount := *account
@@ -143,14 +227,14 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 
 			// 保存更新后的账户状态
 			if updateErr := config.UpdateAccount(account.ID, updatedAccount); updateErr != nil {
-				fmt.Printf("[RefreshAccountInfo] Failed to update account ban status: %v\n", updateErr)
+				logger.Errorf("[RefreshAccountInfo] Failed to update account ban status: %v", updateErr)
 			}
 
 			return nil, fmt.Errorf("Account suspended: %w", err)
 		} else if strings.Contains(errMsg, "403") || strings.Contains(errMsg, "401") ||
 			strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "expired") {
 			// Token 相关错误，可能需要重新认证
-			fmt.Printf("[RefreshAccountInfo] Authentication error for %s: %v\n", account.Email, err)
+			logger.Warnf("[RefreshAccountInfo] Authentication error for %s: %v", account.Email, err)
 
 			// 更新账户封禁状态为认证失败并自动禁用
 			updatedAccount := *account
@@ -161,7 +245,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 
 			// 保存更新后的账户状态
 			if updateErr := config.UpdateAccount(account.ID, updatedAccount); updateErr != nil {
-				fmt.Printf("[RefreshAccountInfo] Failed to update account ban status: %v\n", updateErr)
+				logger.Errorf("[RefreshAccountInfo] Failed to update account ban status: %v", updateErr)
 			}
 		}
 
@@ -170,7 +254,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 
 	// 如果成功获取信息，清除封禁状态（如果之前被标记）
 	if account.BanStatus != "" && account.BanStatus != "ACTIVE" {
-		fmt.Printf("[RefreshAccountInfo] Account %s is now active, clearing ban status\n", account.Email)
+		logger.Infof("[RefreshAccountInfo] Account %s is now active, clearing ban status", account.Email)
 
 		updatedAccount := *account
 		updatedAccount.BanStatus = "ACTIVE"
@@ -179,7 +263,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 
 		// 保存更新后的账户状态
 		if updateErr := config.UpdateAccount(account.ID, updatedAccount); updateErr != nil {
-			fmt.Printf("[RefreshAccountInfo] Failed to clear account ban status: %v\n", updateErr)
+			logger.Errorf("[RefreshAccountInfo] Failed to clear account ban status: %v", updateErr)
 		}
 	}
 
@@ -204,7 +288,7 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 		if info.SubscriptionTitle == "" {
 			info.SubscriptionTitle = usage.SubscriptionInfo.SubscriptionName
 		}
-		fmt.Printf("[RefreshAccountInfo] Subscription: type=%s, title=%s, name=%s, parsed=%s\n",
+		logger.Debugf("[RefreshAccountInfo] Subscription: type=%s, title=%s, name=%s, parsed=%s",
 			usage.SubscriptionInfo.SubscriptionType,
 			usage.SubscriptionInfo.SubscriptionTitle,
 			usage.SubscriptionInfo.SubscriptionName,
